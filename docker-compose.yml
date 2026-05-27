@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: evolutcine-postgres
+    environment:
+      POSTGRES_USER: streamflix
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-streamflix123}
+      POSTGRES_DB: streamflix
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U streamflix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: evolutcine-redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Next.js Frontend
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: evolutcine-web
+    environment:
+      DATABASE_URL: postgresql://streamflix:${DB_PASSWORD:-streamflix123}@postgres:5432/streamflix
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your-jwt-secret-key}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-your-nextauth-secret}
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/web:/app/apps/web
+    restart: unless-stopped
+
+  # Express API
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: evolutcine-api
+    environment:
+      DATABASE_URL: postgresql://streamflix:${DB_PASSWORD:-streamflix123}@postgres:5432/streamflix
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your-jwt-secret-key}
+      NODE_ENV: development
+      PORT: 3001
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app/apps/api
+    restart: unless-stopped
+
+  # Media Server (RTMP/HLS)
+  media-server:
+    image: node:18-alpine
+    container_name: evolutcine-media
+    working_dir: /app
+    command: npm run start
+    environment:
+      NODE_ENV: production
+      RTMP_PORT: 1935
+      HLS_PORT: 8080
+    ports:
+      - "1935:1935"
+      - "8080:8080"
+    volumes:
+      - media_storage:/data/media
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: evolutcine-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - web
+      - api
+      - media-server
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  media_storage:
+
+networks:
+  default:
+    name: evolutcine-network
